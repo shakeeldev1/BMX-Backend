@@ -3,6 +3,7 @@ import Feedbackmodel from "../Model/Feedbackmodel.js";
 import Errorhandler from "../Utils/ErrorHandler.js";
 import { catchAsyncError } from "../MiddleWare/CatchAsyncError.js";
 import SendMail from "../Utils/SendMail.js";
+import mongoose from "mongoose";
 
 export const Signup = catchAsyncError(async (req, res, next) => {
   const { name, email, password, referralCode } = req.body;
@@ -96,15 +97,15 @@ export const verifyUser = catchAsyncError(async (req, res, next) => {
 
   // Generate JWT token
   const token = user.getJWTToken();
-  
-  res.cookie("token", token, { 
-    httpOnly: true, 
-    secure: process.env.NODE_ENV === "production", 
+
+  res.cookie("token", token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
     sameSite: "strict",
-    maxAge: 60 * 60 * 1000
+    maxAge: 60 * 60 * 1000,
   });
 
-  res.status(200).json({ message: "User verified successfully",user });
+  res.status(200).json({ message: "User verified successfully", user });
 });
 
 export const forgotPasswordOTP = catchAsyncError(async (req, res, next) => {
@@ -119,7 +120,7 @@ export const forgotPasswordOTP = catchAsyncError(async (req, res, next) => {
   }
 
   const otp = await user.generateOTP();
-  console.log("otp is .....",otp);
+  console.log("otp is .....", otp);
 
   const name = user.name;
   const subject = "OTP for Password Reset";
@@ -172,7 +173,9 @@ export const resetPassword = catchAsyncError(async (req, res, next) => {
   }
 
   if (!user.otp) {
-    return next(new Errorhandler("OTP not verified. Please verify your OTP first.", 400));
+    return next(
+      new Errorhandler("OTP not verified. Please verify your OTP first.", 400)
+    );
   }
 
   user.password = password;
@@ -248,7 +251,7 @@ export const getReferredUserData = catchAsyncError(async (req, res, next) => {
 
 export const Login = catchAsyncError(async (req, res, next) => {
   const { email, password } = req.body;
-  
+
   const user = await UserModel.findOne({ email }).select("+password");
   if (!user) {
     return next(new Errorhandler("User Not Found", 404));
@@ -262,7 +265,12 @@ export const Login = catchAsyncError(async (req, res, next) => {
   // Check if the user is still pending verification
   if (user.status === "pending") {
     await UserModel.findByIdAndDelete(user._id); // Delete the user
-    return next(new Errorhandler("Your account was not verified and has been deleted. Please sign up again.", 403));
+    return next(
+      new Errorhandler(
+        "Your account was not verified and has been deleted. Please sign up again.",
+        403
+      )
+    );
   }
 
   // Generate token for verified users
@@ -273,7 +281,7 @@ export const Login = catchAsyncError(async (req, res, next) => {
       expires: new Date(Date.now() + 15 * 24 * 60 * 60 * 1000),
       httpOnly: true,
       sameSite: "None",
-      secure: true
+      secure: true,
     })
     .json({
       success: true,
@@ -474,7 +482,6 @@ export const convertPoints = catchAsyncError(async (req, res, next) => {
   try {
     const POINTS_TO_PKR_RATE = 4;
     const userId = req.params.id;
-
     const user = await UserModel.findById(userId);
 
     if (!user) {
@@ -504,6 +511,7 @@ export const convertPoints = catchAsyncError(async (req, res, next) => {
       user,
     });
   } catch (error) {
+    console.log(error);
     res.status(500).json({ success: false, message: "Internal server error" });
   }
 });
@@ -563,4 +571,164 @@ export const convertReferredPoints = catchAsyncError(async (req, res, next) => {
   } catch (error) {
     res.status(500).json({ success: false, message: "Internal server error" });
   }
+});
+
+export const uploadPaymentImage = catchAsyncError(async (req, res, next) => {
+  const userData = req.user;
+  if (!userData) {
+    return next(new Errorhandler("Please login first", 401));
+  }
+
+  if (!req.file) {
+    return next(new Errorhandler("File is required", 400));
+  }
+
+  const name = userData.name;
+  const email = userData.email;
+  // const imageUrl = `${req.protocol}://${req.get("host")}/${req.file.path}`;
+  const imageUrl = req.file?.path;
+
+  // Notify user
+  await SendMail(
+    email,
+    "Image Uploaded",
+    "Your image has been uploaded successfully and is under review."
+  );
+
+  // Notify Admin
+  const adminEmail = process.env.ADMIN_EMAIL;
+  const adminMessage = `
+    <h2>User Image Upload</h2>
+    <p><strong>Name:</strong> ${name}</p>\n
+    <p><strong>Email:</strong> ${email}</p>\n
+    <p><strong>Uploaded Image:</strong> <a href="${imageUrl}" target="_blank">View Image</a></p>\n
+  `;
+  await SendMail(adminEmail, "New Image Uploaded", adminMessage);
+
+  // Store the image URL in the database
+  const user = await UserModel.findByIdAndUpdate(
+    req.user._id,
+    { paymentImage: req.file.path },
+    { new: true }
+  );
+
+  res.status(200).json({
+    success: true,
+    message: "Uploaded successfully. Your request is being processed.",
+    filePath: imageUrl,
+    user,
+  });
+});
+
+export const updateEligibilityCriteria = catchAsyncError(
+  async (req, res, next) => {
+    try {
+      const { status } = req.body;
+      const { userId } = req.params;
+
+      // Validation
+      if (status === undefined || status === null) {
+        return next(new Errorhandler("Status is required", 403));
+      }
+      if (!mongoose.Types.ObjectId.isValid(userId)) {
+        return next(new Errorhandler("Invalid user ID format", 400));
+      }
+
+      const user = await UserModel.findById(userId);
+      if (!user) return next(new Errorhandler("User not found", 404));
+
+      // Send email notification
+      await SendMail(
+        user.email,
+        "Update on Your Eligibility Status",
+        `<p>Dear <strong>${user.name}</strong></p>
+        <p>Your eligibility status has been updated to: <strong>${status}</strong></p>
+        <p>Contact support for any questions.</p>
+        <p>Best regards,<br/>BMX Adventure Team</p>`
+      );
+
+      // Update user eligibility
+      user.eligible = status;
+      await user.save();
+
+      // Process referral if applicable
+      if (status === true && user.referredBy) {
+        const referrer = await UserModel.findById(user.referredBy);
+
+        if (referrer?.eligible === true) {
+          const POINTS_BY_LEVEL = {
+            1: 1000,
+            2: 1400,
+            3: 2000,
+            4: 2500,
+          };
+
+          const pointsToAdd = POINTS_BY_LEVEL[referrer.UserLevel] || 1000;
+
+          referrer.referredPoints.push({
+            userId: user._id,
+            points: pointsToAdd,
+            userDetails: {
+              name: user.name,
+              email: user.email,
+              UserLevel: user.UserLevel,
+              totalPointsEarned: user.totalPointsEarned,
+              referralLink: user.referralLink,
+            },
+          });
+
+          referrer.totalPointsEarned =
+            (referrer.totalPointsEarned || 0) + pointsToAdd;
+          await referrer.save();
+        }
+      }
+
+      res.status(200).json({
+        success: true,
+        message: "User eligibility updated successfully",
+        user,
+      });
+    } catch (error) {
+      console.error("Update eligibility error:", error);
+      return next(new Errorhandler("Internal Server Error", 500));
+    }
+  }
+);
+
+export const updateUserRole = catchAsyncError(async (req, res, next) => {
+  const { role } = req.body;
+  const { userId } = req.params;
+  if (!role) {
+    return next(new Errorhandler("Status is required", 403));
+  }
+
+  const user = await UserModel.findById(userId);
+
+  if (!user) {
+    return next(new Errorhandler("User not found", 404));
+  }
+
+  user.userRole = role;
+  await user.save();
+
+  res.status(200).json({ message: "User Verified successfully", user });
+});
+
+export const deleteUser = catchAsyncError(async (req, res, next) => {
+  const { userId } = req.params;
+
+  if (!userId) {
+    return next(new Errorhandler("User ID is required!", 400));
+  }
+
+  const user = await UserModel.findByIdAndDelete(userId);
+
+  if (!user) {
+    return next(new Errorhandler("Error in deleting user!", 404));
+  }
+
+  res.status(200).json({
+    success: true,
+    message: "User deleted successfully",
+  });
 });

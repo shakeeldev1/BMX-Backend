@@ -6,6 +6,8 @@ import cookieParser from "cookie-parser";
 import connectD from "./ConnectDb/ConnectDB.js";
 import Userroute from "./Route/UserRoute.js";
 import TaskRoute from "./Route/TaskRoute.js";
+import withdrawRoute from './Route/Withdraw.js';
+
 import Error from "./MiddleWare/Error.js";
 
 process.on("uncaughtException", (err) => {
@@ -20,7 +22,8 @@ app.use(express.json());
 
 app.use(
   cors({
-    origin: "https://bmx-frontend.vercel.app",
+    // origin: "https://bmx-frontend.vercel.app",
+    origin: "http://localhost:5174",
     credentials: true,
   })
 );
@@ -33,6 +36,7 @@ app.use(cookieParser());
 
 app.use("/api/v1", Userroute);
 app.use("/api/v1", TaskRoute);
+app.use("/api/v1", withdrawRoute);
 
 app.use(Error);
 
