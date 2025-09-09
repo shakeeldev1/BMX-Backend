@@ -22,8 +22,8 @@ app.use(express.json());
 
 app.use(
   cors({
-    // origin: "https://bmx-frontend.vercel.app",
-    origin: "http://localhost:5174",
+    origin: "https://bmx-frontend.vercel.app",
+    // origin: "http://localhost:5174",
     credentials: true,
   })
 );
