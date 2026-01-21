@@ -573,52 +573,7 @@ export const convertReferredPoints = catchAsyncError(async (req, res, next) => {
   }
 });
 
-export const uploadPaymentImage = catchAsyncError(async (req, res, next) => {
-  const userData = req.user;
-  if (!userData) {
-    return next(new Errorhandler("Please login first", 401));
-  }
 
-  if (!req.file) {
-    return next(new Errorhandler("File is required", 400));
-  }
-
-  const name = userData.name;
-  const email = userData.email;
-  // const imageUrl = `${req.protocol}://${req.get("host")}/${req.file.path}`;
-  const imageUrl = req.file?.path;
-
-  // Notify user
-  await SendMail(
-    email,
-    "Image Uploaded",
-    "Your image has been uploaded successfully and is under review."
-  );
-
-  // Notify Admin
-  const adminEmail = process.env.ADMIN_EMAIL;
-  const adminMessage = `
-    <h2>User Image Upload</h2>
-    <p><strong>Name:</strong> ${name}</p>\n
-    <p><strong>Email:</strong> ${email}</p>\n
-    <p><strong>Uploaded Image:</strong> <a href="${imageUrl}" target="_blank">View Image</a></p>\n
-  `;
-  await SendMail(adminEmail, "New Image Uploaded", adminMessage);
-
-  // Store the image URL in the database
-  const user = await UserModel.findByIdAndUpdate(
-    req.user._id,
-    { paymentImage: req.file.path },
-    { new: true }
-  );
-
-  res.status(200).json({
-    success: true,
-    message: "Uploaded successfully. Your request is being processed.",
-    filePath: imageUrl,
-    user,
-  });
-});
 
 export const updateEligibilityCriteria = catchAsyncError(
   async (req, res, next) => {

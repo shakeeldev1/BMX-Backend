@@ -6,7 +6,9 @@ import cookieParser from "cookie-parser";
 import connectD from "./ConnectDb/ConnectDB.js";
 import Userroute from "./Route/UserRoute.js";
 import TaskRoute from "./Route/TaskRoute.js";
-import withdrawRoute from './Route/Withdraw.js';
+import withdrawRoute from "./Route/Withdraw.js";
+import depositRoute from "./Route/Deposit.js";
+import DepositPollingService from "./Utils/DepositPollingService.js";
 
 import Error from "./MiddleWare/Error.js";
 
@@ -22,29 +24,30 @@ app.use(express.json());
 
 app.use(
   cors({
-    origin: [
-      "https://bmx-frontend.vercel.app",
-      "http://localhost:5173",
-    ],
+    origin: ["https://bmx-frontend.vercel.app", "http://localhost:5174"],
     credentials: true,
   })
 );
 
-app.get('/',(req,res)=>{
-  res.send("Backend is running.......")
-})
+app.get("/", (req, res) => {
+  res.send("Backend is running.......");
+});
 
 app.use(cookieParser());
 
 app.use("/api/v1", Userroute);
 app.use("/api/v1", TaskRoute);
 app.use("/api/v1", withdrawRoute);
+app.use("/api/v1/deposit", depositRoute);
 
 app.use(Error);
 
 const Server = app.listen(PORT, () => {
   console.log(`Server is runing on ${PORT}`);
   connectD();
+  
+  // Start deposit polling service
+  DepositPollingService.start();
 });
 
 process.on("unhandledRejection", (err) => {

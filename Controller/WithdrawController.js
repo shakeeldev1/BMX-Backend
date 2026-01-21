@@ -3,11 +3,13 @@ import WithdrawModel from "../Model/WithdrawModel.js";
 import UserModel from "../Model/UserModel.js";
 import mongoose from "mongoose";
 import SendMail from "../Utils/SendMail.js";
+import BinanceService from "../Utils/BinanceService.js";
+
 
 export const withdrawRequest = catchAsyncError(async (req, res, next) => {
   try {
     const userId = req.user?._id;
-    const { amount } = req.body;
+    const { amount, walletAddress, network } = req.body;
 
     if (!userId) {
       return res
@@ -19,6 +21,23 @@ export const withdrawRequest = catchAsyncError(async (req, res, next) => {
       return res.status(400).json({
         success: false,
         message: "Minimum withdrawal amount is 100 PKR.",
+      });
+    }
+
+    // Validate wallet address
+    if (!walletAddress || walletAddress.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Wallet address is required.",
+      });
+    }
+
+    // Validate network
+    const validNetwork = network || "TRC20";
+    if (validNetwork !== "TRC20" && validNetwork !== "TRX") {
+      return res.status(400).json({
+        success: false,
+        message: "Only TRC20 network is supported.",
       });
     }
 
@@ -35,6 +54,7 @@ export const withdrawRequest = catchAsyncError(async (req, res, next) => {
       ? user.referrals.length
       : 0;
 
+    // EXISTING BUSINESS LOGIC - DO NOT CHANGE
     if (
       (amount === 100 && referralCount < 1) ||
       (amount === 150 && referralCount < 1) ||
@@ -53,41 +73,101 @@ export const withdrawRequest = catchAsyncError(async (req, res, next) => {
         .json({ success: false, message: "Insufficient balance." });
     }
 
+    // Deduct balance immediately
     user.convertedPointsInPKR -= amount;
     await user.save();
     console.log("User balance after withdrawal:", user.convertedPointsInPKR);
 
-    await WithdrawModel.create({ userId, amount });
+    // Process withdrawal via Binance
+    let binanceTxId = null;
+    let binanceStatus = "pending";
+    let withdrawalStatus = "Processing";
+
+    try {
+      // Convert PKR to USDT (assuming 1 PKR = some USDT rate)
+      // For now, we'll use 1:1 ratio, but you should implement proper conversion
+      const usdtAmount = amount; // TODO: Implement proper PKR to USDT conversion
+
+      const binanceResult = await BinanceService.createWithdrawal(
+        walletAddress,
+        usdtAmount,
+        validNetwork === "TRC20" ? "TRX" : validNetwork
+      );
+
+      binanceTxId = binanceResult.id;
+      binanceStatus = "processing";
+      
+      console.log("Binance withdrawal initiated:", binanceTxId);
+    } catch (binanceError) {
+      console.error("Binance withdrawal error:", binanceError);
+      
+      // If Binance fails, refund the user
+      user.convertedPointsInPKR += amount;
+      await user.save();
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to process withdrawal. Please try again later.",
+        error: binanceError.message,
+      });
+    }
+
+    // Create withdrawal record
+    await WithdrawModel.create({
+      userId,
+      amount,
+      walletAddress,
+      network: validNetwork,
+      binanceTxId,
+      binanceStatus,
+      status: withdrawalStatus,
+    });
 
     // Send email to the user
     const userEmail = user.email;
     const userSubject = "Withdrawal Request Submitted";
     const userText = `Dear ${user.name},
-    We have received your withdrawal request of ${amount} PKR. Our team will process your request soon.
-    If you have any queries, feel free to contact our support team.
-    Best regards,
-    BMX Adventure Team  
-    `;
+
+We have received your withdrawal request of ${amount} PKR (${amount} USDT).
+
+Withdrawal Details:
+- Amount: ${amount} USDT
+- Wallet Address: ${walletAddress}
+- Network: ${validNetwork}
+- Transaction ID: ${binanceTxId}
+
+Your withdrawal is being processed and will be completed shortly.
+
+If you have any queries, feel free to contact our support team.
+
+Best regards,
+BMX Adventure Team`;
 
     await SendMail(userEmail, userSubject, userText);
 
     const adminEmail = process.env.ADMIN_EMAIL;
     const adminSubject = "New Withdrawal Request Submitted";
     const adminText = `Hello Admin,
-    A new withdrawal request has been submitted.
-    User: ${user.name}  
-    Email: ${user.email}  
-    Amount: ${amount} PKR  
-    Please review and process the request accordingly.
-    Best regards,  
-    [Your System Notification]`;
+
+A new withdrawal request has been submitted and is being processed via Binance.
+
+User: ${user.name}
+Email: ${user.email}
+Amount: ${amount} PKR (${amount} USDT)
+Wallet Address: ${walletAddress}
+Network: ${validNetwork}
+Binance Transaction ID: ${binanceTxId}
+
+Best regards,
+BMX Adventure System`;
 
     await SendMail(adminEmail, adminSubject, adminText);
 
     return res.status(200).json({
       success: true,
       message:
-        "Withdrawal request submitted successfully. You will receive an email confirmation shortly.",
+        "Withdrawal request submitted successfully. Your funds will be sent to your wallet shortly.",
+      binanceTxId,
     });
   } catch (error) {
     return res.status(500).json({
@@ -97,6 +177,7 @@ export const withdrawRequest = catchAsyncError(async (req, res, next) => {
     });
   }
 });
+
 
 export const getAllWithdrawRequests = catchAsyncError(
   async (req, res, next) => {
