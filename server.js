@@ -24,7 +24,7 @@ app.use(express.json());
 
 app.use(
   cors({
-    origin: ["https://bmx-frontend.vercel.app", "http://localhost:5174","https://bmxadventure.com","https://www.bmxadventure.com"],
+    origin: ["https://bmx-frontend.vercel.app", "http://localhost:5174","https://bmxadventure.com","https://www.bmxadventure.com","https://cyan-opossum-168225.hostingersite.com"],
     credentials: true,
   })
 );
