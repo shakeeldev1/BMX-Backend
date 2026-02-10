@@ -6,19 +6,18 @@ import BinanceService from "../Utils/BinanceService.js";
 
 
 /**
- * Generate a unique deposit amount
- * Amount will be between 3.01 and 3.99 to ensure uniqueness
+ * Generate a unique deposit amount based on a base amount
+ * Amount will be base + random cents to ensure uniqueness
  */
-const generateUniqueAmount = async () => {
+const generateUniqueAmount = async (baseAmount) => {
   let isUnique = false;
   let amount;
   let attempts = 0;
   const maxAttempts = 100;
 
   while (!isUnique && attempts < maxAttempts) {
-    // Generate amount between 3.01 and 3.99 for testing
     const cents = Math.floor(Math.random() * 99) + 1;
-    amount = 3 + cents / 100;
+    amount = baseAmount + cents / 100;
     amount = Math.round(amount * 100) / 100; // Ensure 2 decimal places
 
     // Check if this amount already exists in pending deposits
@@ -46,6 +45,8 @@ const generateUniqueAmount = async () => {
 export const createDepositIntent = catchAsyncError(async (req, res, next) => {
   try {
     const userId = req.user?._id;
+    const { amount, category } = req.body;
+    const allowedCategories = ["Silver", "Gold", "Platinum"];
 
     if (!userId) {
       return res.status(401).json({
@@ -60,6 +61,48 @@ export const createDepositIntent = catchAsyncError(async (req, res, next) => {
       return res.status(404).json({
         success: false,
         message: "User not found.",
+      });
+    }
+
+    if (user.eligible) {
+      return res.status(400).json({
+        success: false,
+        message: "Your account is already activated.",
+      });
+    }
+
+    if (!amount || amount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Investment amount is required.",
+      });
+    }
+
+    if (!category || !allowedCategories.includes(category)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid category selected.",
+      });
+    }
+
+    if (category === "Silver" && amount !== 5) {
+      return res.status(400).json({
+        success: false,
+        message: "Silver category requires exactly 5 USD.",
+      });
+    }
+
+    if (category === "Gold" && amount !== 25) {
+      return res.status(400).json({
+        success: false,
+        message: "Gold category requires exactly 25 USD.",
+      });
+    }
+
+    if (category === "Platinum" && amount < 50) {
+      return res.status(400).json({
+        success: false,
+        message: "Platinum category requires at least 50 USD.",
       });
     }
 
@@ -79,7 +122,7 @@ export const createDepositIntent = catchAsyncError(async (req, res, next) => {
     }
 
     // Generate unique amount
-    const expectedAmount = await generateUniqueAmount();
+    const expectedAmount = await generateUniqueAmount(amount);
 
     // Create deposit intent (expires in 30 minutes)
     const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
@@ -87,6 +130,8 @@ export const createDepositIntent = catchAsyncError(async (req, res, next) => {
     const deposit = await DepositModel.create({
       userId,
       expectedAmount,
+      baseAmount: amount,
+      category,
       expiresAt,
     });
 
@@ -110,10 +155,13 @@ export const createDepositIntent = catchAsyncError(async (req, res, next) => {
 Your deposit request has been created successfully.
 
 Deposit Instructions:
+- Category: ${category}
 - Coin: USDT
 - Network: TRC20
 - Address: ${depositAddress}
 - Exact Amount: ${expectedAmount} USDT
+
+Your selected amount is ${amount} USD. The exact amount above includes cents for unique matching.
 
 ⚠️ IMPORTANT: Please send EXACTLY ${expectedAmount} USDT to ensure automatic processing.
 
@@ -129,6 +177,8 @@ BMX Adventure Team`;
       message: "Deposit request created successfully.",
       deposit: {
         expectedAmount,
+        baseAmount: amount,
+        category,
         coin: "USDT",
         network: "TRC20",
         address: depositAddress,
@@ -159,11 +209,9 @@ export const getDepositStatus = catchAsyncError(async (req, res, next) => {
       });
     }
 
-    // Get user's most recent pending deposit
+    // Get user's most recent deposit (any status)
     const pendingDeposit = await DepositModel.findOne({
       userId,
-      status: "waiting",
-      expiresAt: { $gt: new Date() },
     }).sort({ createdAt: -1 });
 
     return res.status(200).json({

@@ -6,7 +6,7 @@ import SendMail from "../Utils/SendMail.js";
 import mongoose from "mongoose";
 
 export const Signup = catchAsyncError(async (req, res, next) => {
-  const { name, email, password, referralCode } = req.body;
+  const { name, email, password, referralCode, phone } = req.body;
 
   let referredByUser = null;
 
@@ -16,25 +16,35 @@ export const Signup = catchAsyncError(async (req, res, next) => {
     return next(new Errorhandler("Email already registered", 400));
   }
 
-  // Handle referral code validation
-  if (referralCode) {
-    const [username, , userId] = referralCode.split("/");
-    if (!username || !userId) {
-      return next(new Errorhandler("Invalid referral code format", 400));
-    }
-
-    referredByUser = await UserModel.findOne({ referralLink: referralCode });
-
-    if (!referredByUser) {
-      return next(new Errorhandler("Invalid referral code", 400));
-    }
+  if (!referralCode) {
+    return next(new Errorhandler("Referral link is required", 400));
   }
+
+  const normalizedReferralCode = referralCode.trim();
+  const [username, , userId] = normalizedReferralCode.split("/");
+  if (!username || !userId) {
+    return next(new Errorhandler("Invalid referral code format", 400));
+  }
+
+  referredByUser = await UserModel.findOne({
+    referralLink: normalizedReferralCode,
+  });
+
+  if (!referredByUser) {
+    return next(new Errorhandler("Invalid referral code", 400));
+  }
+
+  if (!phone) {
+    return next(new Errorhandler("Phone is required", 400));
+  }
+
 
   // Create new user (status: "pending")
   const user = await UserModel.create({
     name,
     email,
     password,
+    phone,
     referredBy: referredByUser ? referredByUser._id : null,
     status: "pending",
   });
@@ -393,7 +403,12 @@ export const DailyClaim = catchAsyncError(async (req, res, next) => {
     });
   }
 
-  const pointsToAdd = 20;
+  const categoryPoints = {
+    Silver: 200,
+    Gold: 500,
+    Platinum: 1000,
+  };
+  const pointsToAdd = categoryPoints[user.category] || 200;
   user.dailyPoints.count += 1;
   user.dailyPoints.totalPoints += pointsToAdd;
   user.totalPointsEarned += pointsToAdd;
@@ -410,7 +425,8 @@ export const DailyClaim = catchAsyncError(async (req, res, next) => {
 
 export const investment = catchAsyncError(async (req, res, next) => {
   const userId = req.user?._id;
-  const { amount } = req.body;
+  const { amount, category } = req.body;
+  const allowedCategories = ["Silver", "Gold", "Platinum"];
 
   if (!userId) {
     return next(new Errorhandler("User not logged in", 400));
@@ -422,13 +438,55 @@ export const investment = catchAsyncError(async (req, res, next) => {
     return next(new Errorhandler("User not found", 404));
   }
 
-  if (!amount || amount < 1000) {
+  if (!amount || amount <= 0) {
     return next(
-      new Errorhandler("Amount is compulsory and must be at least 1000", 400)
+      new Errorhandler("Amount is compulsory and must be greater than 0", 400)
     );
   }
 
+  if (!category || !allowedCategories.includes(category)) {
+    return next(new Errorhandler("Invalid category selected", 400));
+  }
+
+  if (category === "Silver" && amount !== 5) {
+    return next(new Errorhandler("Silver category requires exactly 5 USD", 400));
+  }
+
+  if (category === "Gold" && amount !== 25) {
+    return next(new Errorhandler("Gold category requires exactly 25 USD", 400));
+  }
+
+  if (category === "Platinum" && amount < 50) {
+    return next(
+      new Errorhandler("Platinum category requires at least 50 USD", 400)
+    );
+  }
+
+  user.category = category;
   user.eligible = true;
+
+  const rewardRate = category === "Silver" ? 0.25 : 0.3;
+  const rewardAmount = Math.round(amount * rewardRate * 100) / 100;
+
+  const currentUSD =
+    typeof user.convertedPointsInUSD === "number"
+      ? user.convertedPointsInUSD
+      : user.convertedPointsInPKR || 0;
+  user.convertedPointsInUSD = currentUSD + rewardAmount;
+  user.convertedPointsInPKR = user.convertedPointsInUSD;
+
+  if (user.referredBy) {
+    const referrer = await UserModel.findById(user.referredBy);
+    if (referrer) {
+      const referrerUSD =
+        typeof referrer.convertedPointsInUSD === "number"
+          ? referrer.convertedPointsInUSD
+          : referrer.convertedPointsInPKR || 0;
+      referrer.convertedPointsInUSD = referrerUSD + rewardAmount;
+      referrer.convertedPointsInPKR = referrer.convertedPointsInUSD;
+      await referrer.save();
+    }
+  }
 
   await user.save();
 
@@ -480,7 +538,7 @@ export const addFeedback = catchAsyncError(async (req, res, next) => {
 
 export const convertPoints = catchAsyncError(async (req, res, next) => {
   try {
-    const POINTS_TO_PKR_RATE = 4;
+    const POINTS_TO_USD_RATE = 4;
     const userId = req.params.id;
     const user = await UserModel.findById(userId);
 
@@ -496,9 +554,14 @@ export const convertPoints = catchAsyncError(async (req, res, next) => {
       );
     }
 
-    const convertedPKR = Math.floor(totalPoints / POINTS_TO_PKR_RATE);
+    const convertedUSD = Math.floor(totalPoints / POINTS_TO_USD_RATE);
 
-    user.convertedPointsInPKR += convertedPKR;
+    const currentUSD =
+      typeof user.convertedPointsInUSD === "number"
+        ? user.convertedPointsInUSD
+        : user.convertedPointsInPKR || 0;
+    user.convertedPointsInUSD = currentUSD + convertedUSD;
+    user.convertedPointsInPKR = user.convertedPointsInUSD;
     user.dailyPoints.totalPoints = 0;
     await user.save();
     res.status(200).json({
@@ -506,7 +569,7 @@ export const convertPoints = catchAsyncError(async (req, res, next) => {
       message: "Your Bep coins have been successfully exchanged.",
       data: {
         totalPoints: user.dailyPoints.totalPoints,
-        convertedPointsInPKR: user.convertedPointsInPKR,
+        convertedPointsInUSD: user.convertedPointsInUSD,
       },
       user,
     });
@@ -518,7 +581,7 @@ export const convertPoints = catchAsyncError(async (req, res, next) => {
 
 export const convertReferredPoints = catchAsyncError(async (req, res, next) => {
   try {
-    const POINTS_TO_PKR_RATE = 4;
+    const POINTS_TO_USD_RATE = 4;
     const userId = req.params.id;
 
     const user = await UserModel.findById(userId);
@@ -547,14 +610,19 @@ export const convertReferredPoints = catchAsyncError(async (req, res, next) => {
       );
     }
 
-    const convertedPKR = Math.floor(totalReferredPoints / POINTS_TO_PKR_RATE);
+    const convertedUSD = Math.floor(totalReferredPoints / POINTS_TO_USD_RATE);
 
     user.referredPoints = user.referredPoints.map((ref) => ({
       ...ref,
       points: 0,
     }));
 
-    user.convertedPointsInPKR = (user.convertedPointsInPKR || 0) + convertedPKR;
+    const currentUSD =
+      typeof user.convertedPointsInUSD === "number"
+        ? user.convertedPointsInUSD
+        : user.convertedPointsInPKR || 0;
+    user.convertedPointsInUSD = currentUSD + convertedUSD;
+    user.convertedPointsInPKR = user.convertedPointsInUSD;
 
     await user.save();
 
@@ -564,7 +632,7 @@ export const convertReferredPoints = catchAsyncError(async (req, res, next) => {
         "The coins from your referral link have been successfully exchanged.",
       data: {
         totalReferredPoints,
-        convertedPointsInPKR: user.convertedPointsInPKR,
+        convertedPointsInUSD: user.convertedPointsInUSD,
       },
       user,
     });
@@ -666,7 +734,7 @@ export const updateUserRole = catchAsyncError(async (req, res, next) => {
   user.userRole = role;
   await user.save();
 
-  res.status(200).json({ message: "User Verified successfully", user });
+  res.status(200).json({ message: "User role updated successfully", user });
 });
 
 export const deleteUser = catchAsyncError(async (req, res, next) => {

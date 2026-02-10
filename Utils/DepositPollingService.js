@@ -19,6 +19,11 @@ class DepositPollingService {
       return;
     }
 
+    if (!process.env.BINANCE_API_KEY || !process.env.BINANCE_API_SECRET) {
+      console.log("Deposit polling service disabled: missing Binance API keys");
+      return;
+    }
+
     this.isRunning = true;
     console.log("🚀 Deposit polling service started");
     
@@ -122,13 +127,44 @@ class DepositPollingService {
       // Mark txId as processed
       this.processedTxIds.add(txId);
 
-      // Update user eligibility
+      // Update user eligibility and category
       const user = await UserModel.findById(depositIntent.userId);
       if (user) {
         // Set user as eligible (this is the investment/deposit requirement)
         if (!user.eligible) {
+          const category = depositIntent.category || user.category;
+          const baseAmount = depositIntent.baseAmount || amount;
+          const rewardRate = category === "Silver" ? 0.25 : category ? 0.3 : 0;
+          const rewardAmount = Math.round(baseAmount * rewardRate * 100) / 100;
+
           user.eligible = true;
+          if (category) {
+            user.category = category;
+          }
+
+          if (rewardAmount > 0) {
+            const currentUSD =
+              typeof user.convertedPointsInUSD === "number"
+                ? user.convertedPointsInUSD
+                : user.convertedPointsInPKR || 0;
+            user.convertedPointsInUSD = currentUSD + rewardAmount;
+            user.convertedPointsInPKR = user.convertedPointsInUSD;
+          }
+
           await user.save();
+
+          if (rewardAmount > 0 && user.referredBy) {
+            const referrer = await UserModel.findById(user.referredBy);
+            if (referrer) {
+              const referrerUSD =
+                typeof referrer.convertedPointsInUSD === "number"
+                  ? referrer.convertedPointsInUSD
+                  : referrer.convertedPointsInPKR || 0;
+              referrer.convertedPointsInUSD = referrerUSD + rewardAmount;
+              referrer.convertedPointsInPKR = referrer.convertedPointsInUSD;
+              await referrer.save();
+            }
+          }
 
           console.log(`User ${user.email} is now eligible`);
 

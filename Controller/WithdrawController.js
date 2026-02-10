@@ -17,10 +17,10 @@ export const withdrawRequest = catchAsyncError(async (req, res, next) => {
         .json({ success: false, message: "Unauthorized request." });
     }
 
-    if (!amount || amount < 100) {
+    if (!amount || amount <= 0) {
       return res.status(400).json({
         success: false,
-        message: "Minimum withdrawal amount is 100 PKR.",
+        message: "Withdrawal amount must be greater than 0 USD.",
       });
     }
 
@@ -50,33 +50,75 @@ export const withdrawRequest = catchAsyncError(async (req, res, next) => {
         .json({ success: false, message: "User not found." });
     }
 
-    const referralCount = Array.isArray(user.referrals)
-      ? user.referrals.length
+    const referralCount = Array.isArray(user.referredPoints)
+      ? user.referredPoints.length
       : 0;
 
-    // EXISTING BUSINESS LOGIC - DO NOT CHANGE
-    if (
-      (amount === 100 && referralCount < 1) ||
-      (amount === 150 && referralCount < 1) ||
-      (amount === 500 && referralCount < 3) ||
-      (amount === 1000 && referralCount < 5)
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Withdrawal conditions not met. Check referral requirements.",
-      });
+    const previousWithdrawals = await WithdrawModel.countDocuments({ userId });
+
+    if (previousWithdrawals === 0) {
+      if (amount !== 1) {
+        return res.status(400).json({
+          success: false,
+          message: "First withdrawal must be exactly 1 USD.",
+        });
+      }
+    } else {
+      if (referralCount < 1) {
+        return res.status(400).json({
+          success: false,
+          message: "Referral is required for withdrawals after the first.",
+        });
+      }
+
+      if (amount < 10) {
+        return res.status(400).json({
+          success: false,
+          message: "Minimum withdrawal amount is 10 USD.",
+        });
+      }
+
+      const userLevel = user.UserLevel || 1;
+      const category = user.category || "Silver";
+      let maxAllowed = null;
+
+      if (category === "Gold") {
+        if (userLevel <= 3) maxAllowed = 25;
+        else if (userLevel <= 5) maxAllowed = 50;
+        else if (userLevel <= 7) maxAllowed = 100;
+      } else if (category === "Platinum") {
+        if (userLevel <= 3) maxAllowed = 50;
+        else if (userLevel <= 5) maxAllowed = 100;
+        else if (userLevel <= 7) maxAllowed = 250;
+      } else {
+        if (userLevel <= 3) maxAllowed = 10;
+        else if (userLevel <= 5) maxAllowed = 25;
+        else if (userLevel <= 7) maxAllowed = 50;
+      }
+
+      if (maxAllowed !== null && amount > maxAllowed) {
+        return res.status(400).json({
+          success: false,
+          message: `Maximum withdrawal for your level is ${maxAllowed} USD.`,
+        });
+      }
     }
 
-    if (user.convertedPointsInPKR < amount) {
+    const currentUSD =
+      typeof user.convertedPointsInUSD === "number"
+        ? user.convertedPointsInUSD
+        : user.convertedPointsInPKR || 0;
+    if (currentUSD < amount) {
       return res
         .status(400)
         .json({ success: false, message: "Insufficient balance." });
     }
 
     // Deduct balance immediately
-    user.convertedPointsInPKR -= amount;
+    user.convertedPointsInUSD = currentUSD - amount;
+    user.convertedPointsInPKR = user.convertedPointsInUSD;
     await user.save();
-    console.log("User balance after withdrawal:", user.convertedPointsInPKR);
+    console.log("User balance after withdrawal:", user.convertedPointsInUSD);
 
     // Process withdrawal via Binance
     let binanceTxId = null;
@@ -84,9 +126,8 @@ export const withdrawRequest = catchAsyncError(async (req, res, next) => {
     let withdrawalStatus = "Processing";
 
     try {
-      // Convert PKR to USDT (assuming 1 PKR = some USDT rate)
-      // For now, we'll use 1:1 ratio, but you should implement proper conversion
-      const usdtAmount = amount; // TODO: Implement proper PKR to USDT conversion
+      // Convert USD to USDT (assuming 1 USD = 1 USDT for now)
+      const usdtAmount = amount; // TODO: Implement proper USD to USDT conversion
 
       const binanceResult = await BinanceService.createWithdrawal(
         walletAddress,
@@ -102,7 +143,8 @@ export const withdrawRequest = catchAsyncError(async (req, res, next) => {
       console.error("Binance withdrawal error:", binanceError);
       
       // If Binance fails, refund the user
-      user.convertedPointsInPKR += amount;
+      user.convertedPointsInUSD = currentUSD;
+      user.convertedPointsInPKR = user.convertedPointsInUSD;
       await user.save();
 
       return res.status(500).json({
@@ -128,7 +170,7 @@ export const withdrawRequest = catchAsyncError(async (req, res, next) => {
     const userSubject = "Withdrawal Request Submitted";
     const userText = `Dear ${user.name},
 
-We have received your withdrawal request of ${amount} PKR (${amount} USDT).
+We have received your withdrawal request of ${amount} USD (${amount} USDT).
 
 Withdrawal Details:
 - Amount: ${amount} USDT
@@ -153,7 +195,7 @@ A new withdrawal request has been submitted and is being processed via Binance.
 
 User: ${user.name}
 Email: ${user.email}
-Amount: ${amount} PKR (${amount} USDT)
+Amount: ${amount} USD (${amount} USDT)
 Wallet Address: ${walletAddress}
 Network: ${validNetwork}
 Binance Transaction ID: ${binanceTxId}
@@ -205,6 +247,22 @@ export const getAllWithdrawRequests = catchAsyncError(
   }
 );
 
+export const getMyWithdrawRequests = catchAsyncError(async (req, res, next) => {
+  const userId = req.user?._id;
+
+  if (!userId) {
+    return res
+      .status(401)
+      .json({ success: false, message: "Unauthorized request." });
+  }
+
+  const requests = await WithdrawModel.find({ userId })
+    .sort({ requestedAt: -1 })
+    .limit(100);
+
+  res.status(200).json({ success: true, data: requests });
+});
+
 export const updateWithdrawStatus = catchAsyncError(async (req, res, next) => {
   const { withdrawId } = req.params;
   const { status } = req.body;
@@ -240,11 +298,11 @@ export const updateWithdrawStatus = catchAsyncError(async (req, res, next) => {
     let userText = `Dear ${user.name},\n\n`;
 
     if (status === "Approved") {
-      userText += `Congratulations! Your withdrawal request of ${updatedRequest.amount} PKR has been approved. The amount will be processed shortly.\n\n`;
+      userText += `Congratulations! Your withdrawal request of ${updatedRequest.amount} USD has been approved. The amount will be processed shortly.\n\n`;
     } else if (status === "Rejected") {
-      userText += `Unfortunately, your withdrawal request of ${updatedRequest.amount} PKR has been rejected. Please contact support for further details.\n\n`;
+      userText += `Unfortunately, your withdrawal request of ${updatedRequest.amount} USD has been rejected. Please contact support for further details.\n\n`;
     } else {
-      userText += `Your withdrawal request of ${updatedRequest.amount} PKR is currently pending. Our team will review and update you soon.\n\n`;
+      userText += `Your withdrawal request of ${updatedRequest.amount} USD is currently pending. Our team will review and update you soon.\n\n`;
     }
 
     userText += `Best regards,\n BMX Adventure Team`;

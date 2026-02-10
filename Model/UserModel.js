@@ -15,11 +15,24 @@ const UserSchema = new mongoose.Schema({
     unique: true,
     validator: [validator.isEmail, "Please enter a valid email address"],
   },
+  phone: {
+    type: String,
+    trim: true,
+  },
+  category: {
+    type: String,
+    enum: ["Silver", "Gold", "Platinum"],
+  },
   password: {
     type: String,
     required: true,
     minlength: [8, "Password must be at least 8 characters"],
     select: false,
+  },
+  userRole: {
+    type: String,
+    enum: ["user", "admin", "Admin"],
+    default: "user",
   },
   status: {
     type: String,
@@ -103,6 +116,10 @@ const UserSchema = new mongoose.Schema({
     },
   },
   totalPointsEarned: {
+    type: Number,
+    default: 0,
+  },
+  convertedPointsInUSD: {
     type: Number,
     default: 0,
   },

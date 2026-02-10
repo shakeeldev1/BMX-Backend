@@ -11,6 +11,13 @@ const depositSchema = new mongoose.Schema({
     required: true,
     unique: true, // Each deposit has unique amount for matching
   },
+  baseAmount: {
+    type: Number,
+  },
+  category: {
+    type: String,
+    enum: ["Silver", "Gold", "Platinum"],
+  },
   coin: {
     type: String,
     default: "USDT",
